@@ -45,6 +45,7 @@ import string
 import shlex
 import socket
 import pydoc
+import types
 from cStringIO import StringIO
 
 # These are used for syntax hilighting.
@@ -56,6 +57,10 @@ from bpython.formatter import BPythonFormatter
 from pyparsing import Forward, Suppress, QuotedString, dblQuotedString, \
     Group, OneOrMore, ZeroOrMore, Literal, Optional, Word, \
     alphas, alphanums, printables, ParseException
+
+def log(x):
+    f = open('/home/bob/tmp/bpython.out', 'a')
+    f.write('%s\n' % (x,))
 
 
 stdscr = None
@@ -287,6 +292,7 @@ class Repl(object):
         self.cpos = 0
 # Use the interpreter's namespace only for the readline stuff:
         self.completer = rlcompleter.Completer(self.interp.locals)
+        self.completer.attr_matches = self.attr_matches
         self.statusbar = statusbar
         self.list_win = curses.newwin(1, 1, 1, 1)
         self.idle = idle
@@ -316,6 +322,44 @@ class Repl(object):
             Optional(Literal(")")))
         pexp << (OneOrMore(Word(chars) | pexpnest))
         self.pparser = pexp
+
+    def attr_matches(self, text):
+        """Taken from rlcompleter.py and bent to my will."""
+
+        m = re.match(r"(\w+(\.\w+)*)\.(\w*)", text)
+        if not m:
+            return []
+        expr, attr = m.group(1, 3)
+        obj = eval(expr, self.interp.locals)
+        type_ = type(obj)
+
+        # Dark magic:
+        if type_ != types.InstanceType:
+            f = getattr(type_, '__getattribute__', None)
+            if f is not None:
+                try:
+                    setattr(type_, '__getattribute__', object.__getattribute__)
+                except TypeError:
+                    # XXX: This happens for e.g. built-in types
+                    f = None
+        # /Dark magic
+
+        words = dir(obj)
+        if hasattr(obj, '__class__'):
+            words.append('__class__')
+            words = words + rlcompleter.get_class_members(obj.__class__)
+
+        # Dark magic:
+        if f is not None:
+            setattr(type_, '__getattribute__', f)
+        # /Dark magic
+
+        matches = []
+        n = len(attr)
+        for word in words:
+            if word[:n] == attr and word != "__builtins__":
+                matches.append("%s.%s" % (expr, word))
+        return matches
 
     def cw(self):
         """Return the current word, i.e. the (incomplete) word directly to the
@@ -466,9 +510,11 @@ class Repl(object):
         try:
             self.completer.complete(cw, 0)
         except Exception:
+            raise
 # This sucks, but it's either that or list all the exceptions that could
 # possibly be raised here, so if anyone wants to do that, feel free to send me
-# a patch.
+# a patch. XXX: Make sure you raise here if you're debugging the completion
+# stuff !
             e = True
         else:
             e = False
