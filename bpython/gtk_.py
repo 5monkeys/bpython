@@ -40,6 +40,7 @@ import pango
 from bpython import importcompletion, repl
 from bpython.config import Struct, loadini
 from bpython.formatter import theme_map
+import bpython.args
 
 
 _COLORS = dict(b='blue', c='cyan', g='green', m='magenta', r='red',
@@ -620,12 +621,13 @@ def init_import_completion():
 
 
 def main(args=None):
-    if args is None:
-        args = sys.argv[1:]
 
     setlocale(LC_ALL, '')
     config = Struct()
-    loadini(config, '~/.bpython/config')
+
+    config, options, exec_args = bpython.args.parse(args)
+
+    loadini(config, '~/.bpython/config', options.config)
 
     interpreter = repl.Interpreter(None, getpreferredencoding())
     repl_widget = ReplWidget(interpreter, config)
