@@ -30,6 +30,7 @@ import sys
 modules = set()
 fully_loaded = False
 
+
 def complete(line, cw):
     """Construct a full list of possibly completions for imports."""
     if not cw:
@@ -50,7 +51,7 @@ def complete(line, cw):
             cw = '%s.%s' % (tokens[1], cw)
         elif len(tokens) == 3:
             return ['import']
-    
+
     matches = list()
     for name in modules:
         if not (name.startswith(cw) and name.find('.', len(cw)) == -1):
@@ -77,7 +78,7 @@ def find_modules(path):
         name = os.path.splitext(name)[0]
         try:
             fo, pathname, _ = imp.find_module(name, [path])
-        except ImportError:
+        except (ImportError, SyntaxError):
             continue
         else:
             if fo is not None:
@@ -102,6 +103,7 @@ def find_all_modules(path=None):
             modules.add(module)
             yield
 
+
 def find_coroutine():
     global fully_loaded
 
@@ -114,6 +116,7 @@ def find_coroutine():
         fully_loaded = True
 
     return True
+
 
 def reload():
     """Refresh the list of known modules."""

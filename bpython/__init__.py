@@ -21,4 +21,9 @@
 # THE SOFTWARE.
 
 
-__version__ = '0.9.3'
+__version__ = '0.9.5.2'
+
+
+def embed(locals_=None, args=['-i', '-q']):
+    from bpython.cli import main
+    return main(args, locals_)

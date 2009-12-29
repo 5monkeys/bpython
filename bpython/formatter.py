@@ -26,7 +26,7 @@
 
 from pygments.formatter import Formatter
 from pygments.token import Keyword, Name, Comment, String, Error, \
-     Number, Operator, Generic, Token, Whitespace, Literal, Punctuation
+     Number, Operator, Token, Whitespace, Literal, Punctuation
 
 """These format strings are pretty ugly.
 \x01 represents a colour marker, which
@@ -60,17 +60,15 @@ theme_map = {
     Comment: 'comment',
     String: 'string',
     Literal: 'string',
-    Literal.String: 'string',
     Error: 'error',
     Number: 'number',
     Token.Literal.Number.Float: 'number',
     Operator: 'operator',
-    Operator.Word: 'operator',
     Punctuation: 'punctuation',
     Token: 'token',
     Whitespace: 'background',
-    Parenthesis: 'punctuation',
-}
+    Parenthesis: 'paren',
+    Parenthesis.UnderCursor: 'operator'}
 
 
 class BPythonFormatter(Formatter):
@@ -103,10 +101,9 @@ class BPythonFormatter(Formatter):
             if text == '\n':
                 continue
 
-            if token in self.f_strings:
-                o +=  "%s\x03%s\x04" % (self.f_strings[token], text )
-            else:
-                o += "%s\x03%s\x04" % (self.f_strings[Token], text )
+            while token not in self.f_strings:
+                token = token.parent
+            o += "%s\x03%s\x04" % (self.f_strings[token], text)
         outfile.write(o.rstrip())
 
 # vim: sw=4 ts=4 sts=4 ai et

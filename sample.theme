@@ -3,7 +3,7 @@
 # which stands for:
 #   blacK, Red, Green, Yellow, Blue, Magenta, Cyan, White, Default
 # Capital letters represent bold
-# Copy to ~/.bpython/foo.theme and set "color_scheme = foo" in ~/.bpython.ini
+# Copy to ~/.bpython/foo.theme and set "color_scheme = foo" in ~/.bython/config
 
 [syntax]
 keyword = y
@@ -13,13 +13,15 @@ string = m
 error = r
 number = G
 operator = Y
+paren = y
 punctuation = y
 token = C
+paren = R
 
 [interface]
 # XXX: gnome-terminal appears to be braindead. The cursor will disappear unless
 # you set the background colour to "d".
-background = k
+background = d
 output = w
 main = c
 prompt = c
