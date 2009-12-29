@@ -635,6 +635,8 @@ def main(args=None):
     # sys.stderr = repl_widget
     sys.stdout = repl_widget
 
+#    repl.startup()
+
     gobject.idle_add(init_import_completion)
 
     window = gtk.Window()
@@ -657,6 +659,7 @@ def main(args=None):
     window.add(sw)
     window.show_all()
     window.connect('delete-event', lambda widget, event: gtk.main_quit())
+
     gtk.main()
 
 
