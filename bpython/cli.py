@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-#
+
 # The MIT License
 #
 # Copyright (c) 2008 Bob Farrell
@@ -31,7 +30,6 @@ import curses
 import math
 import re
 import time
-import inspect
 import signal
 import struct
 import termios
@@ -50,7 +48,6 @@ from pygments.token import Token
 from bpython.formatter import BPythonFormatter
 
 # This for completion
-from bpython import inspection
 from bpython import importcompletion
 
 # This for config
@@ -59,8 +56,8 @@ from bpython.config import Struct
 # This for keys
 from bpython.keys import key_dispatch
 
+from bpython import repl
 from bpython.pager import page
-from bpython.repl import Interpreter, Repl
 import bpython.args
 
 
@@ -234,12 +231,28 @@ def make_colors(config):
     return c
 
 
-class CLIRepl(Repl):
+class CLIInteraction(repl.Interaction):
+    def __init__(self, config, statusbar=None):
+        repl.Interaction.__init__(self, config, statusbar)
+
+    def confirm(self, q):
+        """Ask for yes or no and return boolean"""
+        return self.statusbar.prompt(q).lower().startswith('y')
+ 
+    def notify(self, s, n=10):
+        return self.statusbar.message(s, n)
+
+    def file_prompt(self, s):
+        return self.statusbar.prompt(s)
+
+
+class CLIRepl(repl.Repl):
 
     def __init__(self, scr, interp, statusbar, config, idle=None):
-        Repl.__init__(self, interp, config)
-        interp.writetb = self.writetb
+        repl.Repl.__init__(self, interp, config)
+        self.interp.writetb = self.writetb
         self.scr = scr
+        self.stdout_hist = ''
         self.list_win = newwin(get_colpair(config, 'background'), 1, 1, 1, 1)
         self.cpos = 0
         self.do_exit = False
@@ -251,6 +264,7 @@ class CLIRepl(Repl):
         self.s = ''
         self.statusbar = statusbar
         self.formatter = BPythonFormatter(config.color_scheme)
+        self.interact = CLIInteraction(self.config, statusbar=self.statusbar)
 
     def addstr(self, s):
         """Add a string to the current input line and figure out
@@ -334,7 +348,7 @@ class CLIRepl(Repl):
         """Called when a SyntaxError occured in the interpreter. It is
         used to prevent autoindentation from occuring after a
         traceback."""
-        Repl.clear_current_line(self)
+        repl.Repl.clear_current_line(self)
         self.s = ''
 
     def clear_wrapped_lines(self):
@@ -359,7 +373,7 @@ class CLIRepl(Repl):
             return
 
         if self.config.auto_display_list or tab:
-            self.list_win_visible = Repl.complete(self, tab)
+            self.list_win_visible = repl.Repl.complete(self, tab)
             if self.list_win_visible:
                 try:
                     self.show_list(self.matches, self.argspec)
@@ -809,19 +823,14 @@ class CLIRepl(Repl):
             return ''
 
         elif key in key_dispatch[config.show_source_key]:
-            try:
-                obj = self.current_func
-                if obj is None and inspection.is_eval_safe_name(self.s):
-                    obj = self.get_object(self.s)
-                source = inspect.getsource(obj)
-            except (AttributeError, IOError, NameError, TypeError):
-                self.statusbar.message("Cannot show source.")
-                return ''
-            else:
+            source = self.get_source_of_current_name()
+            if source is not None:
                 if config.highlight_show_source:
                     source = format(PythonLexer().get_tokens(source),
                                     TerminalFormatter())
                 page(source)
+            else:
+                self.statusbar.message('Cannot show source.')
             return ''
 
         elif key == '\n':
@@ -900,7 +909,7 @@ class CLIRepl(Repl):
         # curses.raw(True) prevents C-c from causing a SIGINT
         curses.raw(False)
         try:
-            return Repl.push(self, s, insert_into_history)
+            return repl.Repl.push(self, s, insert_into_history)
         except SystemExit:
             # Avoid a traceback on e.g. quit()
             self.do_exit = True
@@ -997,6 +1006,79 @@ class CLIRepl(Repl):
         self.scr.mvwin(self.y, self.x)
         self.statusbar.resize(refresh=False)
         self.redraw()
+
+
+    def getstdout(self):
+        """This method returns the 'spoofed' stdout buffer, for writing to a
+        file or sending to a pastebin or whatever."""
+
+        return self.stdout_hist + '\n'
+
+
+    def reevaluate(self):
+        """Clear the buffer, redraw the screen and re-evaluate the history"""
+
+        self.evaluating = True
+        self.stdout_hist = ''
+        self.f_string = ''
+        self.buffer = []
+        self.scr.erase()
+        self.s_hist = []
+        # Set cursor position to -1 to prevent paren matching
+        self.cpos = -1
+
+        self.prompt(False)
+
+        self.iy, self.ix = self.scr.getyx()
+        for line in self.history:
+            if py3:
+                self.stdout_hist += line + '\n'
+            else:
+                self.stdout_hist += line.encode(getpreferredencoding()) + '\n'
+            self.print_line(line)
+            self.s_hist[-1] += self.f_string
+# I decided it was easier to just do this manually
+# than to make the print_line and history stuff more flexible.
+            self.scr.addstr('\n')
+            more = self.push(line)
+            self.prompt(more)
+            self.iy, self.ix = self.scr.getyx()
+
+        self.cpos = 0
+        indent = repl.next_indentation(self.s, self.config.tab_length)
+        self.s = ''
+        self.scr.refresh()
+
+        if self.buffer:
+            for _ in xrange(indent):
+                self.tab()
+
+        self.evaluating = False
+        #map(self.push, self.history)
+        #^-- That's how simple this method was at first :(
+
+    def write(self, s):
+        """For overriding stdout defaults"""
+        if '\x04' in s:
+            for block in s.split('\x04'):
+                self.write(block)
+            return
+        if s.rstrip() and '\x03' in s:
+            t = s.split('\x03')[1]
+        else:
+            t = s
+
+        if not py3 and isinstance(t, unicode):
+            t = t.encode(getpreferredencoding())
+
+        if not self.stdout_hist:
+            self.stdout_hist = t
+        else:
+            self.stdout_hist += t
+
+        self.echo(s)
+        self.s_hist.append(s.rstrip())
+
 
     def show_list(self, items, topline=None, current_item=None):
         shared = Struct()
@@ -1217,7 +1299,7 @@ class CLIRepl(Repl):
         return True
 
     def undo(self, n=1):
-        Repl.undo(self, n)
+        repl.Repl.undo(self, n)
 
         # This will unhighlight highlighted parens
         self.print_line(self.s)
@@ -1537,6 +1619,7 @@ def main_curses(scr, args, config, interactive=True, locals_=None,
     global stdscr
     global DO_RESIZE
     global colors
+    global repl
     DO_RESIZE = False
 
     # FIXME: Handle window resize without signals
@@ -1564,31 +1647,31 @@ def main_curses(scr, args, config, interactive=True, locals_=None,
     if locals_ is None:
         sys.modules['__main__'] = ModuleType('__main__')
         locals_ = sys.modules['__main__'].__dict__
-    interpreter = Interpreter(locals_, getpreferredencoding())
+    interpreter = repl.Interpreter(locals_, getpreferredencoding())
 
-    repl = CLIRepl(main_win, interpreter, statusbar, config, idle)
-    repl._C = cols
+    clirepl = CLIRepl(main_win, interpreter, statusbar, config, idle)
+    clirepl._C = cols
 
-    sys.stdin = FakeStdin(repl)
-    sys.stdout = repl
-    sys.stderr = repl
+    sys.stdin = FakeStdin(clirepl)
+    sys.stdout = clirepl
+    sys.stderr = clirepl
 
     if args:
         bpython.args.exec_code(interpreter, args)
         if not interactive:
             curses.raw(False)
-            return repl.getstdout()
+            return clirepl.getstdout()
     else:
         sys.path.insert(0, '')
-        repl.startup()
+        clirepl.startup()
 
     if banner is not None:
-        repl.write(banner)
-        repl.write('\n')
-    repl.repl()
+        clirepl.write(banner)
+        clirepl.write('\n')
+    clirepl.repl()
     if config.hist_length:
         histfilename = os.path.expanduser(config.hist_file)
-        repl.rl_history.save(histfilename, getpreferredencoding())
+        clirepl.rl_history.save(histfilename, getpreferredencoding())
 
     main_win.erase()
     main_win.refresh()
@@ -1601,7 +1684,7 @@ def main_curses(scr, args, config, interactive=True, locals_=None,
     signal.signal(signal.SIGWINCH, old_sigwinch_handler)
     signal.signal(signal.SIGCONT, old_sigcont_handler)
 
-    return repl.getstdout()
+    return clirepl.getstdout()
 
 
 def main(args=None, locals_=None, banner=None):

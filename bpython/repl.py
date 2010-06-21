@@ -236,6 +236,23 @@ class MatchesIterator(object):
             self.index = -1
 
 
+class Interaction(object):
+    def __init__(self, config, statusbar=None):
+        self.config = config
+
+        if statusbar:
+            self.statusbar = statusbar
+
+    def confirm(self, s):
+        raise NotImplementedError
+
+    def notify(self, s, n=10):
+        raise NotImplementedError
+
+    def file_prompt(self, s):
+        raise NotImplementedError
+
+
 class Repl(object):
     """Implements the necessary guff for a Python-repl-alike interface
 
@@ -284,7 +301,6 @@ class Repl(object):
         self.interp.syntaxerror_callback = self.clear_current_line
         self.match = False
         self.rl_history = History()
-        self.stdout_hist = ''
         self.s_hist = []
         self.history = []
         self.evaluating = False
@@ -303,6 +319,7 @@ class Repl(object):
         self.list_win_visible = False
         self._C = {}
         self.prev_block_finished = 0
+        self.interact = Interaction(self.config)
         # previous pastebin content to prevent duplicate pastes, filled on call
         # to repl.pastebin
         self.prev_pastebin_content = ''
@@ -471,6 +488,22 @@ class Repl(object):
             return True
         return False
 
+    def get_source_of_current_name(self):
+        """Return the source code of the object which is bound to the
+        current name in the current input line. Return `None` if the
+        source cannot be found."""
+        try:
+            obj = self.current_func
+            if obj is None:
+                line = self.current_line()
+                if inspection.is_eval_safe_name(line):
+                    obj = self.get_object(line)
+            source = inspect.getsource(obj)
+        except (AttributeError, IOError, NameError, TypeError):
+            return None
+        else:
+            return source
+
     def complete(self, tab=False):
         """Construct a full list of possible completions and construct and
         display them in a window. Also check if there's an available argspec
@@ -598,12 +631,6 @@ class Repl(object):
             indentation = 0
         return indentation
 
-    def getstdout(self):
-        """This method returns the 'spoofed' stdout buffer, for writing to a
-        file or sending to a pastebin or whatever."""
-
-        return self.stdout_hist + '\n'
-
     def formatforfile(self, s):
         """Format the stdout buffer to something suitable for writing to disk,
         i.e. without >>> and ... at input lines and with "# OUT: " prepended to
@@ -622,9 +649,12 @@ class Repl(object):
         buffer to disk."""
 
         try:
-            fn = self.statusbar.prompt('Save to file (Esc to cancel): ')
+            fn = self.interact.file_prompt('Save to file (Esc to cancel): ')
+            if not fn:
+                self.interact.notify("Save cancelled.")
+                return
         except ValueError:
-            self.statusbar.message("Save cancelled.")
+            self.interact.notify("Save cancelled.")
             return
 
         if fn.startswith('~'):
@@ -637,43 +667,43 @@ class Repl(object):
             f.write(s)
             f.close()
         except IOError:
-            self.statusbar.message("Disk write error for file '%s'." % (fn, ))
+            self.interact.notify("Disk write error for file '%s'." % (fn, ))
         else:
-            self.statusbar.message('Saved to %s' % (fn, ))
+            self.interact.notify('Saved to %s' % (fn, ))
 
-    def pastebin(self):
+    def pastebin(self, s=None):
         """Upload to a pastebin and display the URL in the status bar."""
 
+        if s is None:
+            s = self.getstdout()
+
         if (self.config.pastebin_confirm and
-            not self.statusbar.prompt("Pastebin buffer? (y/N) "
-            ).lower().startswith('y'
-            )):
-            self.statusbar.message("Pastebin aborted")
+            not self.interact.confirm("Pastebin buffer? (y/N) ")):
+            self.interact.notify("Pastebin aborted")
             return
 
         pasteservice = ServerProxy(self.config.pastebin_url)
 
-        s = self.getstdout()
-
         if s == self.prev_pastebin_content:
-            self.statusbar.message('Duplicate pastebin. Previous URL: ' +
-                                    self.prev_pastebin_url)
-            return
+            self.interact.notify('Duplicate pastebin. Previous URL: ' +
+                                  self.prev_pastebin_url)
+            return self.prev_pastebin_url
 
         self.prev_pastebin_content = s
 
-        self.statusbar.message('Posting data to pastebin...')
+        self.interact.notify('Posting data to pastebin...')
         try:
             paste_id = pasteservice.pastes.newPaste('pycon', s)
         except XMLRPCError, e:
-            self.statusbar.message('Upload failed: %s' % (str(e), ) )
+            self.interact.notify('Upload failed: %s' % (str(e), ) )
             return
 
         paste_url_template = Template(self.config.pastebin_show_url)
         paste_id = urlquote(paste_id)
         paste_url = paste_url_template.safe_substitute(paste_id=paste_id)
         self.prev_pastebin_url = paste_url
-        self.statusbar.message('Pastebin URL: %s' % (paste_url, ), 10)
+        self.interact.notify('Pastebin URL: %s' % (paste_url, ), 10)
+        return paste_url
 
     def push(self, s, insert_into_history=True):
         """Push a line of code onto the buffer so it can process it all
@@ -709,70 +739,6 @@ class Repl(object):
         self.reevaluate()
 
         self.rl_history.entries = entries
-
-    def reevaluate(self):
-        """Clear the buffer, redraw the screen and re-evaluate the history"""
-
-        self.evaluating = True
-        self.stdout_hist = ''
-        self.f_string = ''
-        self.buffer = []
-        self.scr.erase()
-        self.s_hist = []
-        # Set cursor position to -1 to prevent paren matching
-        self.cpos = -1
-
-        self.prompt(False)
-
-        self.iy, self.ix = self.scr.getyx()
-        for line in self.history:
-            if py3:
-                self.stdout_hist += line + '\n'
-            else:
-                self.stdout_hist += line.encode(getpreferredencoding()) + '\n'
-            self.print_line(line)
-            self.s_hist[-1] += self.f_string
-# I decided it was easier to just do this manually
-# than to make the print_line and history stuff more flexible.
-            self.scr.addstr('\n')
-            more = self.push(line)
-            self.prompt(more)
-            self.iy, self.ix = self.scr.getyx()
-
-        self.cpos = 0
-        indent = next_indentation(self.s, self.config.tab_length)
-        self.s = ''
-        self.scr.refresh()
-
-        if self.buffer:
-            for _ in xrange(indent):
-                self.tab()
-
-        self.evaluating = False
-        #map(self.push, self.history)
-        #^-- That's how simple this method was at first :(
-
-    def write(self, s):
-        """For overriding stdout defaults"""
-        if '\x04' in s:
-            for block in s.split('\x04'):
-                self.write(block)
-            return
-        if s.rstrip() and '\x03' in s:
-            t = s.split('\x03')[1]
-        else:
-            t = s
-
-        if not py3 and isinstance(t, unicode):
-            t = t.encode(getpreferredencoding())
-
-        if not self.stdout_hist:
-            self.stdout_hist = t
-        else:
-            self.stdout_hist += t
-
-        self.echo(s)
-        self.s_hist.append(s.rstrip())
 
     def flush(self):
         """Olivier Grisel brought it to my attention that the logging

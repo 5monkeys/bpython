@@ -167,7 +167,13 @@ def decoding_input_filter(keys, raw):
     """Input filter for urwid which decodes each key with the locale's
     preferred encoding.'"""
     encoding = locale.getpreferredencoding()
-    return [key.decode(encoding) for key in keys]
+    converted_keys = list()
+    for key in keys:
+        if isinstance(key, basestring):
+            converted_keys.append(key.decode(encoding))
+        else:
+            converted_keys.append(key)
+    return converted_keys
 
 def format_tokens(tokensource):
     for token, text in tokensource:
@@ -378,6 +384,17 @@ class Tooltip(urwid.BoxWidget):
         canvas.cursor = cursor
         return canvas
 
+class URWIDInteraction(repl.Interaction):
+    def __init__(self, config, statusbar=None):
+        repl.Interaction.__init__(self, config, statusbar)
+
+    def confirm(self, q):
+        """Ask for yes or no and return boolean"""
+        return self.statusbar.prompt(q).lower().startswith('y')
+ 
+    def notify(self, s, n=10):
+        return self.statusbar.message(s, n)
+
 
 class URWIDRepl(repl.Repl):
 
@@ -394,9 +411,12 @@ class URWIDRepl(repl.Repl):
              config.pastebin_key, config.last_output_key,
              config.show_source_key))
 
+        self.interact = URWIDInteraction(self.config, self.statusbar)
+
         self.tooltip = urwid.ListBox(urwid.SimpleListWalker([]))
         self.tooltip.grid = None
         self.overlay = Tooltip(self.listbox, self.tooltip)
+        self.stdout_hist = ''
 
         self.frame = urwid.Frame(self.overlay, footer=self.statusbar.widget)
 
@@ -567,6 +587,81 @@ class URWIDRepl(repl.Repl):
     def reprint_line(self, lineno, tokens):
         edit = self.edits[-len(self.buffer) + lineno - 1]
         edit.set_edit_markup(list(format_tokens(tokens)))
+
+    def getstdout(self):
+        """This method returns the 'spoofed' stdout buffer, for writing to a
+        file or sending to a pastebin or whatever."""
+
+        return self.stdout_hist + '\n'
+
+    def ask_confirmation(self, q):
+        """Ask for yes or no and return boolean"""
+        return self.statusbar.prompt(q).lower().startswith('y')
+ 
+    def reevaluate(self):
+        """Clear the buffer, redraw the screen and re-evaluate the history"""
+
+        self.evaluating = True
+        self.stdout_hist = ''
+        self.f_string = ''
+        self.buffer = []
+        self.scr.erase()
+        self.s_hist = []
+        # Set cursor position to -1 to prevent paren matching
+        self.cpos = -1
+
+        self.prompt(False)
+
+        self.iy, self.ix = self.scr.getyx()
+        for line in self.history:
+            if py3:
+                self.stdout_hist += line + '\n'
+            else:
+                self.stdout_hist += line.encode(locale.getpreferredencoding()) + '\n'
+            self.print_line(line)
+            self.s_hist[-1] += self.f_string
+# I decided it was easier to just do this manually
+# than to make the print_line and history stuff more flexible.
+            self.scr.addstr('\n')
+            more = self.push(line)
+            self.prompt(more)
+            self.iy, self.ix = self.scr.getyx()
+
+        self.cpos = 0
+        indent = repl.next_indentation(self.s, self.config.tab_length)
+        self.s = ''
+        self.scr.refresh()
+
+        if self.buffer:
+            for _ in xrange(indent):
+                self.tab()
+
+        self.evaluating = False
+        #map(self.push, self.history)
+        #^-- That's how simple this method was at first :(
+
+    def write(self, s):
+        """For overriding stdout defaults"""
+        if '\x04' in s:
+            for block in s.split('\x04'):
+                self.write(block)
+            return
+        if s.rstrip() and '\x03' in s:
+            t = s.split('\x03')[1]
+        else:
+            t = s
+
+        if not py3 and isinstance(t, unicode):
+            t = t.encode(locale.getpreferredencoding())
+
+        if not self.stdout_hist:
+            self.stdout_hist = t
+        else:
+            self.stdout_hist += t
+
+        self.echo(s)
+        self.s_hist.append(s.rstrip())
+
 
     def push(self, s, insert_into_history=True):
         # Restore the original SIGINT handler. This is needed to be able

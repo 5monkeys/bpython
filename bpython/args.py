@@ -21,7 +21,7 @@ class RaisingOptionParser(OptionParser):
         raise OptionParserFailed()
 
 
-def parse(args, extras=None):
+def parse(args, extras=None, ignore_stdin=False):
     """Receive an argument list - if None, use sys.argv - parse all args and
     take appropriate action. Also receive optional extra options: this should
     be a tuple of (title, description, options)
@@ -87,7 +87,7 @@ def parse(args, extras=None):
                'See AUTHORS for detail.')
         raise SystemExit
 
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+    if not ignore_stdin and not (sys.stdin.isatty() and sys.stdout.isatty()):
         interpreter = code.InteractiveInterpreter()
         interpreter.runsource(sys.stdin.read())
         raise SystemExit

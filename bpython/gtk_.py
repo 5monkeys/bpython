@@ -37,15 +37,28 @@ from locale import LC_ALL, getpreferredencoding, setlocale
 import gobject
 import gtk
 import pango
+from pygments.lexers import PythonLexer
 
 from bpython import importcompletion, repl
 from bpython.formatter import theme_map
 import bpython.args
 
+py3 = sys.version_info[0] == 3
 
 _COLORS = dict(b='blue', c='cyan', g='green', m='magenta', r='red',
                w='white', y='yellow', k='black', d='black')
 
+def add_tags_to_buffer(color_scheme, text_buffer):
+    tags = dict()
+    for (name, value) in color_scheme.iteritems():
+        tag = tags[name] = text_buffer.create_tag(name)
+        for (char, prop) in zip(value, ['foreground', 'background']):
+            if char.lower() == 'd':
+                continue
+            tag.set_property(prop, _COLORS[char.lower()])
+            if char.isupper():
+                tag.set_property('weight', pango.WEIGHT_BOLD)
+    return tags
 
 class ArgspecFormatter(object):
     """
@@ -109,7 +122,6 @@ class ExceptionManager(object):
             dialog.run()
             dialog.destroy()
 
-
 class Nested(object):
     """
     A helper class, inspired by a semaphore.
@@ -128,6 +140,23 @@ class Nested(object):
     def __nonzero__(self):
         return bool(self.counter)
 
+class Statusbar(gtk.Statusbar):
+    """Contains feedback messages"""
+    def __init__(self):
+        gtk.Statusbar.__init__(self)
+        self.context_id = self.get_context_id('Statusbar')
+
+    def message(self, s, n=3):
+        self.clear()
+        self.push(self.context_id, s)
+        gobject.timeout_add(n*1000, self.clear)
+
+    def clear(self):
+        self.pop(self.context_id)
+
+        # To stop the timeout from firing again
+        return False
+
 
 class SuggestionWindow(gtk.Window):
     """
@@ -145,7 +174,7 @@ class SuggestionWindow(gtk.Window):
         self.set_name('gtk-tooltips')
         self.argspec_formatter = ArgspecFormatter()
 
-        vbox = gtk.VBox()
+        vbox = gtk.VBox(homogeneous=False)
         vbox.set_style(self.get_style())
 
         self.argspec_label = gtk.Label()
@@ -182,7 +211,8 @@ class SuggestionWindow(gtk.Window):
         self.show_all()
 
     def back(self):
-        self.select(-1)
+        if len(self.model):
+            self.select(-1)
 
     def do_expose_event(self, event):
         """
@@ -195,7 +225,8 @@ class SuggestionWindow(gtk.Window):
         gtk.Window.do_expose_event(self, event)
 
     def forward(self):
-        self.select(1)
+        if len(self.model):
+            self.select(1)
 
     def on_selection_changed(self, selection):
         model, iter_ = selection.get_selected()
@@ -247,6 +278,51 @@ class SuggestionWindow(gtk.Window):
         self.view.set_property('visible', bool(matches))
 
 
+class GTKInteraction(repl.Interaction):
+    def __init__(self, config, statusbar):
+        repl.Interaction.__init__(self, config, statusbar)
+
+    def confirm(self, q):
+        dialog = gtk.MessageDialog(None, gtk.DIALOG_MODAL, gtk.MESSAGE_INFO,
+                                   gtk.BUTTONS_YES_NO, q)
+        response = dialog.run()
+        dialog.destroy()
+        return response == gtk.RESPONSE_YES
+
+    def file_prompt(self, s):
+        chooser = gtk.FileChooserDialog(title="File to save to",
+                                        action=gtk.FILE_CHOOSER_ACTION_SAVE,
+                                        buttons=(gtk.STOCK_CANCEL,
+                                                 gtk.RESPONSE_CANCEL,
+                                                 gtk.STOCK_OPEN,
+                                                 gtk.RESPONSE_OK))
+        chooser.set_default_response(gtk.RESPONSE_OK)
+        chooser.set_current_name('test.py')
+        chooser.set_current_folder(os.path.expanduser('~'))
+
+        pyfilter = gtk.FileFilter()
+        pyfilter.set_name("Python files")
+        pyfilter.add_pattern("*.py")
+        chooser.add_filter(pyfilter)
+
+        allfilter = gtk.FileFilter()
+        allfilter.set_name("All files")
+        allfilter.add_pattern("*")
+        chooser.add_filter(allfilter)
+
+        response = chooser.run()
+        if response == gtk.RESPONSE_OK:
+            fn = chooser.get_filename()
+        else:
+            fn = False
+
+        chooser.destroy()
+
+        return fn
+
+    def notify(self, s, n=10):
+        self.statusbar.message(s)
+
 class ReplWidget(gtk.TextView, repl.Repl):
     __gsignals__ = dict(button_press_event=None,
                         focus_in_event=None,
@@ -257,7 +333,7 @@ class ReplWidget(gtk.TextView, repl.Repl):
     def __init__(self, interpreter, config):
         gtk.TextView.__init__(self)
         repl.Repl.__init__(self, interpreter, config)
-        interpreter.writetb = self.writetb
+        self.interp.writetb = self.writetb
         self.editing = Nested()
         self.reset_indent = False
         self.modify_font(pango.FontDescription(self.config.gtk_font))
@@ -267,18 +343,11 @@ class ReplWidget(gtk.TextView, repl.Repl):
                               self.on_suggestion_selection_changed)
         self.list_win.hide()
 
-        self.modify_base('normal', gtk.gdk.color_parse(_COLORS[self.config.color_scheme['background']]))
+        self.modify_base('normal', gtk.gdk.color_parse(_COLORS[self.config.color_gtk_scheme['background']]))
 
         self.text_buffer = self.get_buffer()
-        tags = dict()
-        for (name, value) in self.config.color_scheme.iteritems():
-            tag = tags[name] = self.text_buffer.create_tag(name)
-            for (char, prop) in zip(value, ['foreground', 'background']):
-                if char.lower() == 'd':
-                    continue
-                tag.set_property(prop, _COLORS[char.lower()])
-                if char.isupper():
-                    tag.set_property('weight', pango.WEIGHT_BOLD)
+        self.interact = GTKInteraction(self.config, Statusbar())
+        tags = add_tags_to_buffer(self.config.color_gtk_scheme, self.text_buffer)
         tags['prompt'].set_property('editable', False)
 
         self.text_buffer.connect('delete-range', self.on_buf_delete_range)
@@ -402,7 +471,14 @@ class ReplWidget(gtk.TextView, repl.Repl):
                                gtk.gdk.MOD4_MASK |
                                gtk.gdk.SHIFT_MASK)
         if not state:
-            if event.keyval == gtk.keysyms.Return:
+            if event.keyval == gtk.keysyms.F2:
+                source = self.get_source_of_current_name()
+                if source is not None:
+                    show_source_in_new_window(source, self.config.color_gtk_scheme,
+                                              self.config.syntax)
+                else:
+                    self.interact.notify('Cannot show source.')
+            elif event.keyval == gtk.keysyms.Return:
                 if self.list_win_visible:
                     self.list_win_visible = False
                     self.list_win.hide()
@@ -552,6 +628,41 @@ class ReplWidget(gtk.TextView, repl.Repl):
                                     self.get_cursor_iter())
             self.text_buffer.insert_at_cursor(word)
 
+    def do_paste(self, widget):
+        clipboard = gtk.clipboard_get()
+        paste_url = self.pastebin()
+        if paste_url:
+            clipboard.set_text(paste_url)
+            clipboard.store()
+
+    def do_write2file(self, widget):
+        self.write2file()
+
+    def do_partial_paste(self, widget):
+        bounds = self.text_buffer.get_selection_bounds()
+        if bounds == ():
+            # FIXME show a nice status bar message
+            pass
+        else:
+            self.pastebin(self.text_buffer.get_text(bounds[0], bounds[1]))
+
+    def write(self, s):
+        """For overriding stdout defaults"""
+        if '\x04' in s:
+            for block in s.split('\x04'):
+                self.write(block)
+            return
+        if s.rstrip() and '\x03' in s:
+            t = s.split('\x03')[1]
+        else:
+            t = s
+
+        if not py3 and isinstance(t, unicode):
+            t = t.encode(getpreferredencoding())
+
+        self.echo(s)
+        self.s_hist.append(s.rstrip())
+
     def prompt(self, more):
         """
         Show the appropriate Python prompt.
@@ -561,9 +672,9 @@ class ReplWidget(gtk.TextView, repl.Repl):
         else:
             text = '>>> '
         with self.editing:
-            self.text_buffer.insert_with_tags_by_name(self.get_cursor_iter(),
-                                                      text, 'prompt')
-        iter_ = self.move_cursor(len(text))
+            iter_ = self.get_cursor_iter()
+            self.text_buffer.insert_with_tags_by_name(iter_, text, 'prompt')
+        iter_.forward_chars(4)
         mark = self.text_buffer.create_mark('line_start', iter_, True)
         self.text_buffer.place_cursor(iter_)
         self.scroll_to_mark(mark, 0.2)
@@ -607,6 +718,11 @@ class ReplWidget(gtk.TextView, repl.Repl):
         if line_start_iter.compare(cursor_iter) > 0:
             self.text_buffer.place_cursor(line_start_iter)
 
+    def getstdout(self):
+        bounds = self.text_buffer.get_bounds()
+        text = self.text_buffer.get_text(bounds[0], bounds[1])
+        return text
+
     def writetb(self, lines):
         with ExceptionManager(ExceptionDialog,
                               'An error occured while trying to display '
@@ -619,6 +735,23 @@ class ReplWidget(gtk.TextView, repl.Repl):
                 )
             self.move_cursor(len(string))
 
+def show_source_in_new_window(source, color_scheme=None, highlight=True):
+    win = gtk.Window()
+    sw = gtk.ScrolledWindow()
+    view = gtk.TextView()
+    buffer = view.get_buffer()
+    if highlight:
+        add_tags_to_buffer(color_scheme, buffer)
+        for (token, value) in PythonLexer().get_tokens(source):
+            while token not in theme_map:
+                token = token.parent
+            iter_ = buffer.get_end_iter()
+            buffer.insert_with_tags_by_name(iter_, value, theme_map[token])
+    else:
+        buffer.insert(buffer.get_end_iter(), source)
+    sw.add(view)
+    win.add(sw)
+    win.show_all()
 
 def init_import_completion():
     try:
@@ -637,7 +770,8 @@ def main(args=None):
                    "Options specific to bpython's Gtk+ front end",
                    [optparse.Option('--socket-id', dest='socket_id',
                                     type='int', help='Embed bpython')])
-    config, options, exec_args = bpython.args.parse(args, gtk_options)
+    config, options, exec_args = bpython.args.parse(args, gtk_options,
+                                                    True)
 
     interpreter = repl.Interpreter(None, getpreferredencoding())
     repl_widget = ReplWidget(interpreter, config)
@@ -674,12 +808,47 @@ def main(args=None):
         parent = gtk.Plug(options.socket_id)
         parent.connect('destroy', gtk.main_quit)
 
-    # read from config
+    container = gtk.VBox()
+    parent.add(container)
 
+    mb = gtk.MenuBar()
+    filemenu = gtk.Menu()
+
+    filem = gtk.MenuItem("File")
+    filem.set_submenu(filemenu)
+
+    save = gtk.ImageMenuItem(gtk.STOCK_SAVE)
+    save.connect("activate", repl_widget.do_write2file)
+    filemenu.append(save)
+
+    pastebin = gtk.MenuItem("Pastebin")
+    pastebin.connect("activate", repl_widget.do_paste)
+    filemenu.append(pastebin)
+
+    pastebin_partial = gtk.MenuItem("Pastebin selection")
+    pastebin_partial.connect("activate", repl_widget.do_partial_paste)
+    filemenu.append(pastebin_partial)
+
+    exit = gtk.ImageMenuItem(gtk.STOCK_QUIT)
+    exit.connect("activate", gtk.main_quit)
+    filemenu.append(exit)
+
+    mb.append(filem)
+    vbox = gtk.VBox(False, 2)
+    vbox.pack_start(mb, False, False, 0)
+
+    container.pack_start(vbox, expand=False)
+
+    # read from config
     sw = gtk.ScrolledWindow()
     sw.set_policy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
     sw.add(repl_widget)
-    parent.add(sw)
+    container.add(sw)
+
+    sb = repl_widget.interact.statusbar
+    container.pack_end(sb, expand=False)
+
+    parent.set_focus(repl_widget)
     parent.show_all()
     parent.connect('delete-event', lambda widget, event: gtk.main_quit())
 
@@ -692,7 +861,6 @@ def main(args=None):
             histfilename = os.path.expanduser(config.hist_file)
             repl_widget.rl_history.save(histfilename, getpreferredencoding())
     return 0
-
 
 if __name__ == '__main__':
     from bpython.gtk_ import main

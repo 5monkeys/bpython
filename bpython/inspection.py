@@ -24,6 +24,7 @@
 from __future__ import with_statement
 import collections
 import inspect
+import keyword
 import pydoc
 import re
 import sys
@@ -35,14 +36,13 @@ from pygments.token import Token
 try:
     collections.Callable
     has_collections_callable = True
-    try:
-        import types
-        types.InstanceType
-        has_instance_type = True
-    except AttributeError:
-        has_instance_type = False
 except AttributeError:
     has_collections_callable = False
+try:
+    types.InstanceType
+    has_instance_type = True
+except AttributeError:
+    has_instance_type = False
 
 py3 = sys.version_info[0] == 3
 
@@ -237,9 +237,11 @@ def getargspec(func, f):
 
 def is_eval_safe_name(string):
     if py3:
-        return all(part.isidentifier() for part in string.split('.'))
+        return all(part.isidentifier() and not keyword.iskeyword(part)
+                   for part in string.split('.'))
     else:
-        return all(_name.match(part) for part in string.split('.'))
+        return all(_name.match(part) and not keyword.iskeyword(part)
+                   for part in string.split('.'))
 
 
 def is_callable(obj):
