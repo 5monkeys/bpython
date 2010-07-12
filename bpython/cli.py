@@ -237,8 +237,14 @@ class CLIInteraction(repl.Interaction):
 
     def confirm(self, q):
         """Ask for yes or no and return boolean"""
-        return self.statusbar.prompt(q).lower().startswith('y')
- 
+        try:
+            reply = self.statusbar.prompt(q)
+        except ValueError:
+            return False
+
+        return reply.lower() in ('y', 'yes')
+
+
     def notify(self, s, n=10):
         return self.statusbar.message(s, n)
 
@@ -285,16 +291,6 @@ class CLIRepl(repl.Repl):
         attempt tab completion."""
 
         return not self.s.lstrip()
-
-    def back(self):
-        """Replace the active line with previous line in history and
-        increment the index to keep track"""
-
-        self.cpos = 0
-        self.rl_history.enter(self.s)
-        self.clear_wrapped_lines()
-        self.s = self.rl_history.back()
-        self.print_line(self.s, clr=True)
 
     def bs(self, delete_tabs=True):
         """Process a backspace"""
@@ -473,6 +469,8 @@ class CLIRepl(repl.Repl):
         s = s.replace('\x01', '')
         # Replace NUL bytes, as addstr raises an exception otherwise
         s = s.replace('\x00', '')
+        # Replace \r\n bytes, as addstr remove the current line otherwise
+        s = s.replace('\x0D\x0A', '\x0A')
 
         self.scr.addstr(s, a)
 
@@ -489,6 +487,33 @@ class CLIRepl(repl.Repl):
             self.scr.refresh()
 
         return True
+
+    def hbegin(self):
+        """Replace the active line with first line in history and
+        increment the index to keep track"""
+        self.cpos = 0
+        self.clear_wrapped_lines()
+        self.rl_history.enter(self.s)
+        self.s = self.rl_history.first()
+        self.print_line(self.s, clr=True)
+
+    def hend(self):
+        """Same as hbegin() but, well, forward"""
+        self.cpos = 0
+        self.clear_wrapped_lines()
+        self.rl_history.enter(self.s)
+        self.s = self.rl_history.last()
+        self.print_line(self.s, clr=True)
+
+    def back(self):
+        """Replace the active line with previous line in history and
+        increment the index to keep track"""
+
+        self.cpos = 0
+        self.clear_wrapped_lines()
+        self.rl_history.enter(self.s)
+        self.s = self.rl_history.back()
+        self.print_line(self.s, clr=True)
 
     def fwd(self):
         """Same as back() but, well, forward"""
@@ -777,6 +802,14 @@ class CLIRepl(repl.Repl):
         elif key in ("KEY_END", '^E', chr(5)):  # end or ^E
             self.end()
             # Redraw (as there might have been highlighted parens)
+            self.print_line(self.s)
+
+        elif key in ("KEY_NPAGE", '\T'): # page_down or \T
+            self.hend()
+            self.print_line(self.s)
+
+        elif key in ("KEY_PPAGE", '\S'): # page_up or \S
+            self.hbegin()
             self.print_line(self.s)
 
         elif key in key_dispatch[config.cut_to_buffer_key]:  # cut to buffer
@@ -1414,22 +1447,21 @@ class Statusbar(object):
         while True:
             c = self.win.getch()
 
+            # '\b'
             if c == 127:
                 o = bs(o)
-                continue
-
-            if c == 27:
-                raise ValueError
-
-            if not c or c < 0 or c > 127:
-                continue
-            c = chr(c)
-
-            if c == '\n':
+            # '\n'
+            elif c == 10:
                 break
-
-            self.win.addstr(c, get_colpair(self.config, 'prompt'))
-            o += c
+            # ESC
+            elif c == 27:
+                curses.flushinp()
+                raise ValueError
+            # literal
+            elif 0 <= c < 127:
+                c = chr(c)
+                self.win.addstr(c, get_colpair(self.config, 'prompt'))
+                o += c
 
         self.settext(self._s)
         return o
@@ -1480,10 +1512,6 @@ def init_wins(scr, colors, config):
 # Thanks to Angus Gibson for pointing out this missing line which was causing
 # problems that needed dirty hackery to fix. :)
 
-# TODO:
-#
-# This should show to be configured keys from ~/.bpython/config
-#
     statusbar = Statusbar(scr, main_win, background, config,
         " <%s> Rewind  <%s> Save  <%s> Pastebin  <%s> Pager  <%s> Show Source " %
             (config.undo_key, config.save_key,

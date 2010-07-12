@@ -25,5 +25,9 @@ class TestConfig(unittest.TestCase):
 
         defaults = {"name": "c"}
         expected.update(defaults)
-        config.load_theme(struct, TEST_THEME_PATH, "test.ini", defaults)
+        config.load_gtk_theme(struct, TEST_THEME_PATH, "test.ini", defaults)
         self.assertEquals(struct.color_gtk_scheme, expected)
+
+
+if __name__ == '__main__':
+    unittest.main()
