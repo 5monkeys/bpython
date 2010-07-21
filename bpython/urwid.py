@@ -47,6 +47,7 @@ from pygments.token import Token
 from bpython import args as bpargs, repl
 from bpython.formatter import theme_map
 from bpython.importcompletion import find_coroutine
+from bpython.translations import _
 
 import urwid
 
@@ -391,7 +392,12 @@ class URWIDInteraction(repl.Interaction):
 
     def confirm(self, q):
         """Ask for yes or no and return boolean"""
-        return self.statusbar.prompt(q).lower().startswith('y')
+        try:
+            reply = self.statusbar.prompt(q)
+        except ValueError:
+            return False
+
+        return reply.lower() in (_('y'), _('yes'))
 
     def notify(self, s, n=10):
         return self.statusbar.message(s, n)
@@ -405,12 +411,11 @@ class URWIDRepl(repl.Repl):
         self.listbox = urwid.ListBox(urwid.SimpleListWalker([]))
 
         # String is straight from bpython.cli
-        self.statusbar = Statusbar(
-            config,
-            " <%s> Rewind  <%s> Save  <%s> Pastebin  <%s> Pager  <%s> Show Source " %
-            (config.undo_key, config.save_key,
-             config.pastebin_key, config.last_output_key,
-             config.show_source_key))
+        self.statusbar = Statusbar(config,
+            _(" <%s> Rewind  <%s> Save  <%s> Pastebin "
+              " <%s> Pager  <%s> Show Source ") %
+              (config.undo_key, config.save_key, config.pastebin_key,
+               config.last_output_key, config.show_source_key))
 
         self.interact = URWIDInteraction(self.config, self.statusbar)
 
@@ -472,7 +477,7 @@ class URWIDRepl(repl.Repl):
         # Stolen from cli. TODO: clean up and split out.
         if (not text or
             (not text[-1].isalnum() and text[-1] not in ('.', '_'))):
-            return
+             return
 
         # Seek backwards in text for the first non-identifier char:
         for i, c in enumerate(reversed(text)):
@@ -597,7 +602,12 @@ class URWIDRepl(repl.Repl):
 
     def ask_confirmation(self, q):
         """Ask for yes or no and return boolean"""
-        return self.statusbar.prompt(q).lower().startswith('y')
+        try:
+            reply = self.statusbar.prompt(q)
+        except ValueError:
+            return False
+
+        return reply.lower() in ('y', 'yes')
 
     def reevaluate(self):
         """Clear the buffer, redraw the screen and re-evaluate the history"""
