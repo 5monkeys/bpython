@@ -57,6 +57,9 @@ from bpython.config import Struct
 # This for keys
 from bpython.keys import key_dispatch
 
+# This for i18n
+from bpython.translations import _
+
 from bpython import repl
 from bpython.pager import page
 import bpython.args
@@ -247,7 +250,7 @@ class CLIInteraction(repl.Interaction):
         except ValueError:
             return False
 
-        return reply.lower() in ('y', 'yes')
+        return reply.lower() in (_('y'), _('yes'))
 
 
     def notify(self, s, n=10):
@@ -880,7 +883,7 @@ class CLIRepl(repl.Repl):
                                     TerminalFormatter())
                 page(source)
             else:
-                self.statusbar.message('Cannot show source.')
+                self.statusbar.message(_('Cannot show source.'))
             return ''
 
         elif key == '\n':
@@ -1530,10 +1533,10 @@ def init_wins(scr, colors, config):
 # problems that needed dirty hackery to fix. :)
 
     statusbar = Statusbar(scr, main_win, background, config,
-        " <%s> Rewind  <%s> Save  <%s> Pastebin  <%s> Pager  <%s> Show Source " %
-            (config.undo_key, config.save_key,
-             config.pastebin_key, config.last_output_key,
-             config.show_source_key),
+        _(" <%s> Rewind  <%s> Save  <%s> Pastebin "
+          " <%s> Pager  <%s> Show Source ") %
+          (config.undo_key, config.save_key, config.pastebin_key,
+           config.last_output_key, config.show_source_key),
             get_colpair(config, 'main'))
 
     return main_win, statusbar
