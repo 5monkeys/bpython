@@ -37,6 +37,7 @@ from __future__ import absolute_import, with_statement, division
 
 import sys
 import os
+import time
 import locale
 import signal
 from types import ModuleType
@@ -112,35 +113,38 @@ else:
             return EvalProtocol(self.repl)
 
 
-class TwistedEventLoop(urwid.TwistedEventLoop):
+if urwid.VERSION < (1, 0, 0):
+    class TwistedEventLoop(urwid.TwistedEventLoop):
 
-    """TwistedEventLoop modified to properly stop the reactor.
+        """TwistedEventLoop modified to properly stop the reactor.
 
-    urwid 0.9.9 and 0.9.9.1 crash the reactor on ExitMainLoop instead
-    of stopping it. One obvious way this breaks is if anything used
-    the reactor's thread pool: that thread pool is not shut down if
-    the reactor is not stopped, which means python hangs on exit
-    (joining the non-daemon threadpool threads that never exit). And
-    the default resolver is the ThreadedResolver, so if we looked up
-    any names we hang on exit. That is bad enough that we hack up
-    urwid a bit here to exit properly.
-    """
+        urwid 0.9.9 and 0.9.9.1 crash the reactor on ExitMainLoop instead
+        of stopping it. One obvious way this breaks is if anything used
+        the reactor's thread pool: that thread pool is not shut down if
+        the reactor is not stopped, which means python hangs on exit
+        (joining the non-daemon threadpool threads that never exit). And
+        the default resolver is the ThreadedResolver, so if we looked up
+        any names we hang on exit. That is bad enough that we hack up
+        urwid a bit here to exit properly.
+        """
 
-    def handle_exit(self, f):
-        def wrapper(*args, **kwargs):
-            try:
-                return f(*args, **kwargs)
-            except urwid.ExitMainLoop:
-                # This is our change.
-                self.reactor.stop()
-            except:
-                # This is the same as in urwid.
-                # We are obviously not supposed to ever hit this.
-                import sys
-                print sys.exc_info()
-                self._exc_info = sys.exc_info()
-                self.reactor.crash()
-        return wrapper
+        def handle_exit(self, f):
+            def wrapper(*args, **kwargs):
+                try:
+                    return f(*args, **kwargs)
+                except urwid.ExitMainLoop:
+                    # This is our change.
+                    self.reactor.stop()
+                except:
+                    # This is the same as in urwid.
+                    # We are obviously not supposed to ever hit this.
+                    import sys
+                    print sys.exc_info()
+                    self._exc_info = sys.exc_info()
+                    self.reactor.crash()
+            return wrapper
+else:
+    TwistedEventLoop = urwid.TwistedEventLoop
 
 
 class Statusbar(object):
@@ -251,7 +255,11 @@ class BPythonEdit(urwid.Edit):
 
         You should arrange for this to be called from the 'change' signal.
         """
-        self._bpy_text, self._bpy_attr = urwid.decompose_tagmarkup(markup)
+        if markup:
+            self._bpy_text, self._bpy_attr = urwid.decompose_tagmarkup(markup)
+        else:
+            # decompose_tagmarkup in some urwids fails on the empty list
+            self._bpy_text, self._bpy_attr = '', []
         # This is redundant when we're called off the 'change' signal.
         # I'm assuming this is cheap, making that ok.
         self._invalidate()
@@ -431,8 +439,14 @@ class URWIDInteraction(repl.Interaction):
 
 class URWIDRepl(repl.Repl):
 
+    _time_between_redraws = .05 # seconds
+
     def __init__(self, event_loop, palette, interpreter, config):
         repl.Repl.__init__(self, interpreter, config)
+
+        self._redraw_handle = None
+        self._redraw_pending = False
+        self._redraw_time = 0
 
         self.listbox = BPythonListBox(urwid.SimpleListWalker([]))
 
@@ -478,6 +492,13 @@ class URWIDRepl(repl.Repl):
                 self.current_output = urwid.Text(('output', s))
                 if self.edit is None:
                     self.listbox.body.append(self.current_output)
+                    # Focus the widget we just added to force the
+                    # listbox to scroll. This causes output to scroll
+                    # if the user runs a blocking call that prints
+                    # more than a screenful, instead of staying
+                    # scrolled to the previous input line and then
+                    # jumping to the bottom when done.
+                    self.listbox.set_focus(len(self.listbox.body) - 1)
                 else:
                     self.listbox.body.insert(-1, self.current_output)
                     # The edit widget should be focused and *stay* focused.
@@ -489,9 +510,37 @@ class URWIDRepl(repl.Repl):
                     ('output', self.current_output.text + s))
         if orig_s.endswith('\n'):
             self.current_output = None
-        # TODO: maybe do the redraw after a short delay
-        # (for performance)
-        self.main_loop.draw_screen()
+
+        # If we hit this repeatedly in a loop the redraw is rather
+        # slow (testcase: pprint(__builtins__). So if we have recently
+        # drawn the screen already schedule a call in the future.
+        #
+        # Unfortunately we may hit this function repeatedly through a
+        # blocking call triggered by the user, in which case our
+        # timeout will not run timely as we do not return to urwid's
+        # eventloop. So we manually check if our timeout has long
+        # since expired, and redraw synchronously if it has.
+        if self._redraw_handle is None:
+            self.main_loop.draw_screen()
+
+            def maybe_redraw(loop, self):
+                if self._redraw_pending:
+                    loop.draw_screen()
+                    self._redraw_pending = False
+
+                self._redraw_handle = None
+
+            self._redraw_handle = self.main_loop.set_alarm_in(
+                self._time_between_redraws, maybe_redraw, self)
+            self._redraw_time = time.time()
+        else:
+            self._redraw_pending = True
+            now = time.time()
+            if now - self._redraw_time > 2 * self._time_between_redraws:
+                # The timeout is well past expired, assume we're
+                # blocked and redraw synchronously.
+                self.main_loop.draw_screen()
+                self._redraw_time = now
 
     def current_line(self):
         """Return the current line (the one the cursor is in)."""
@@ -513,7 +562,7 @@ class URWIDRepl(repl.Repl):
         # Stolen from cli. TODO: clean up and split out.
         if (not text or
             (not text[-1].isalnum() and text[-1] not in ('.', '_'))):
-             return
+            return
 
         # Seek backwards in text for the first non-identifier char:
         for i, c in enumerate(reversed(text)):
@@ -740,8 +789,20 @@ class URWIDRepl(repl.Repl):
         self.prompt(False)
 
     def keyboard_interrupt(self):
-        # Do we need to do more here? Break out of multiline input perhaps?
-        self.echo('KeyboardInterrupt')
+        # If the user is currently editing, interrupt him. This
+        # mirrors what the regular python REPL does.
+        if self.edit is not None:
+            # XXX this is a lot of code, and I am not sure it is
+            # actually enough code. Needs some testing.
+            self.edit.make_readonly()
+            self.edit = None
+            self.buffer = []
+            self.echo('KeyboardInterrupt')
+            self.prompt(False)
+        else:
+            # I do not quite remember if this is reachable, but let's
+            # be safe.
+            self.echo('KeyboardInterrupt')
 
     def prompt(self, more):
         # Clear current output here, or output resulting from the
@@ -751,14 +812,20 @@ class URWIDRepl(repl.Repl):
         # XXX is this the right place?
         self.rl_history.reset()
         # XXX what is s_hist?
+
+        # We need the caption to use unicode as urwid normalizes later
+        # input to be the same type, using ascii as encoding. If the
+        # caption is bytes this breaks typing non-ascii into bpython.
+        # Currently this decodes using ascii as I do not know where
+        # ps1 is getting loaded from. If anyone wants to make
+        # non-ascii prompts work feel free to fix this.
         if not more:
-            self.edit = BPythonEdit(self.config,
-                                    caption=('prompt', self.ps1))
+            caption = ('prompt', self.ps1.decode('ascii'))
             self.stdout_hist += self.ps1
         else:
-            self.edit = BPythonEdit(self.config,
-                                    caption=('prompt_more', self.ps2))
+            caption = ('prompt_more', self.ps2.decode('ascii'))
             self.stdout_hist += self.ps2
+        self.edit = BPythonEdit(self.config, caption=caption)
 
         urwid.connect_signal(self.edit, 'change', self.on_input_change)
         urwid.connect_signal(self.edit, 'edit-pos-changed',

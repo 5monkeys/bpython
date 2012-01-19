@@ -6,6 +6,15 @@ from itertools import chain
 from bpython.keys import cli_key_dispatch as key_dispatch
 
 
+MAGIC_METHODS = ", ".join("__%s__" % s for s in [
+    "init", "repr", "str", "lt", "le", "eq", "ne", "gt", "ge", "cmp", "hash",
+    "nonzero", "unicode", "getattr", "setattr", "get", "set","call", "len",
+    "getitem", "setitem", "iter", "reversed", "contains", "add", "sub", "mul",
+    "floordiv", "mod", "divmod", "pow", "lshift", "rshift", "and", "xor", "or",
+    "div", "truediv", "neg", "pos", "abs", "invert", "complex", "int", "float",
+    "oct", "hex", "index", "coerce", "enter", "exit"]
+)
+
 class Struct(object):
     """Simple class for instantiating objects we can add arbitrary attributes
     to and use for various arbitrary things."""
@@ -45,11 +54,14 @@ def loadini(struct, configfile):
             'arg_spec': True,
             'auto_display_list': True,
             'color_scheme': 'default',
+            'complete_magic_methods' : True,
+            'magic_methods' : MAGIC_METHODS,
             'dedent_after': 1,
             'flush_output': True,
             'highlight_show_source': True,
             'hist_file': '~/.pythonhist',
             'hist_length': 100,
+            'hist_duplicates': True,
             'paste_time': 0.02,
             'syntax': True,
             'tab_length': 4,
@@ -99,6 +111,7 @@ def loadini(struct, configfile):
                                                      'highlight_show_source')
     struct.hist_file = config.get('general', 'hist_file')
     struct.hist_length = config.getint('general', 'hist_length')
+    struct.hist_duplicates = config.getboolean('general', 'hist_duplicates')
     struct.flush_output = config.getboolean('general', 'flush_output')
     struct.pastebin_key = config.get('keyboard', 'pastebin')
     struct.save_key = config.get('keyboard', 'save')
@@ -123,6 +136,11 @@ def loadini(struct, configfile):
 
     struct.cli_suggestion_width = config.getfloat('cli',
                                                   'suggestion_width')
+
+    struct.complete_magic_methods = config.getboolean('general',
+                                                      'complete_magic_methods')
+    methods = config.get('general', 'magic_methods')
+    struct.magic_methods = [meth.strip() for meth in methods.split(",")]
 
     struct.gtk_font = config.get('gtk', 'font')
 
